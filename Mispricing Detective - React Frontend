@@ -1,0 +1,602 @@
+import React, { useState, useEffect, createContext, useContext, useReducer } from 'react';
+import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis } from 'recharts';
+import { Search, FileText, Heart, Brain, Scale, Target, Save, ThumbsDown, PlusCircle } from 'lucide-react';
+
+// --- Configuration ---
+const API_BASE_URL = "http://127.0.0.1:5000"; // The address of our local Python backend
+
+// --- State Management (React Context & Reducer) ---
+const AppContext = createContext();
+
+const initialState = {
+    view: 'dashboard', // 'dashboard', 'analysis', 'report'
+    analyses: {}, // Store saved analyses by ticker
+    currentTicker: null,
+    loading: false,
+    error: null,
+    apiData: null,
+};
+
+function appReducer(state, action) {
+    switch (action.type) {
+        case 'START_ANALYSIS':
+            return { ...state, loading: true, error: null };
+        case 'ANALYSIS_SUCCESS':
+            return { ...state, loading: false, view: 'analysis', currentTicker: action.payload.ticker, apiData: action.payload };
+        case 'ANALYSIS_ERROR':
+            return { ...state, loading: false, error: action.payload };
+        case 'SHOW_DASHBOARD':
+            return { ...state, view: 'dashboard', currentTicker: null, apiData: null, error: null };
+        case 'SHOW_REPORT':
+            // Only allow showing report if there's a valid analysis
+            if (state.analyses[state.currentTicker]) {
+                 return { ...state, view: 'report' };
+            }
+            alert("Please save the analysis before generating a report.");
+            return state;
+        case 'SAVE_ANALYSIS': {
+            const { ticker, analysisState } = action.payload;
+            return { ...state, analyses: { ...state.analyses, [ticker]: analysisState }};
+        }
+        case 'LOAD_ANALYSIS': {
+            const { ticker, savedState } = action.payload;
+            return { ...state, view: 'analysis', currentTicker: ticker, apiData: savedState.apiData, error: null };
+        }
+        default:
+            return state;
+    }
+}
+
+// Custom hook for easier context access
+const useAppContext = () => useContext(AppContext);
+
+// --- Main App Component ---
+export default function App() {
+    const [state, dispatch] = useReducer(appReducer, initialState);
+
+    // This useEffect hook handles loading saved analyses from localStorage on initial load
+    useEffect(() => {
+        try {
+            const savedAnalyses = localStorage.getItem('mispricingDetectiveAnalyses');
+            if (savedAnalyses) {
+                const parsedAnalyses = JSON.parse(savedAnalyses);
+                Object.entries(parsedAnalyses).forEach(([ticker, analysisState]) => {
+                    dispatch({ type: 'SAVE_ANALYSIS', payload: { ticker, analysisState } });
+                });
+            }
+        } catch (error) {
+            console.error("Failed to load analyses from localStorage", error);
+        }
+    }, []);
+
+    // This useEffect hook saves analyses to localStorage whenever they change
+    useEffect(() => {
+        try {
+            if (Object.keys(state.analyses).length > 0) {
+                localStorage.setItem('mispricingDetectiveAnalyses', JSON.stringify(state.analyses));
+            }
+        } catch (error) {
+            console.error("Failed to save analyses to localStorage", error);
+        }
+    }, [state.analyses]);
+
+
+    return (
+        <AppContext.Provider value={{ state, dispatch }}>
+            <div className="bg-gray-900 text-gray-100 min-h-screen font-sans">
+                <Header />
+                <main className="p-4 md:p-8">
+                    {state.error && <ErrorMessage message={state.error} />}
+                    {state.view === 'dashboard' && <Dashboard />}
+                    {state.view === 'analysis' && <AnalysisView />}
+                    {state.view === 'report' && <ReportView />}
+                </main>
+            </div>
+        </AppContext.Provider>
+    );
+}
+
+// --- Layout Components ---
+
+function Header() {
+    const { dispatch } = useAppContext();
+    return (
+        <header className="bg-gray-800 p-4 flex justify-between items-center shadow-md">
+            <h1 className="text-xl md:text-2xl font-bold text-cyan-400 cursor-pointer" onClick={() => dispatch({ type: 'SHOW_DASHBOARD' })}>
+                Mispricing Detective
+            </h1>
+            <TickerInput />
+        </header>
+    );
+}
+
+function TickerInput() {
+    const [ticker, setTicker] = useState("");
+    const { dispatch } = useAppContext();
+
+    const handleAnalyze = async (e) => {
+        e.preventDefault();
+        if (!ticker) return;
+        
+        dispatch({ type: 'START_ANALYSIS' });
+        
+        try {
+            const response = await fetch(`${API_BASE_URL}/analyze/${ticker}`);
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.error || `HTTP error! status: ${response.status}`);
+            }
+            
+            dispatch({ type: 'ANALYSIS_SUCCESS', payload: data });
+        } catch (error) {
+            console.error("Analysis fetch failed:", error);
+            dispatch({ type: 'ANALYSIS_ERROR', payload: error.message });
+        }
+    };
+
+    return (
+        <form onSubmit={handleAnalyze} className="flex items-center">
+            <input
+                type="text"
+                value={ticker}
+                onChange={(e) => setTicker(e.target.value.toUpperCase())}
+                placeholder="Enter Ticker (e.g., AAPL)"
+                className="bg-gray-700 border border-gray-600 rounded-l-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+            />
+            <button type="submit" className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-2 px-4 rounded-r-md flex items-center transition-colors">
+                <Search size={18} className="mr-2" />
+                Analyze
+            </button>
+        </form>
+    );
+}
+
+function ErrorMessage({ message }) {
+    return (
+        <div className="bg-red-900/50 border border-red-700 text-red-300 px-4 py-3 rounded-lg relative mb-6" role="alert">
+            <strong className="font-bold">Error: </strong>
+            <span className="block sm:inline">{message}</span>
+        </div>
+    );
+}
+
+// --- View Components ---
+
+function Dashboard() {
+    const { state, dispatch } = useAppContext();
+    const savedAnalyses = Object.entries(state.analyses);
+
+    return (
+        <div className="animate-fade-in">
+            <h2 className="text-3xl font-bold text-white mb-6">Opportunity Dashboard</h2>
+            {savedAnalyses.length === 0 && !state.loading ? (
+                <p className="text-gray-400">No saved analyses yet. Enter a ticker to begin.</p>
+            ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {savedAnalyses.map(([ticker, savedState]) => (
+                        <DashboardCard key={ticker} ticker={ticker} savedState={savedState} />
+                    ))}
+                </div>
+            )}
+            {state.loading && <div className="text-center p-10"><div className="loader"></div><p className="mt-4">Fetching data...</p></div>}
+        </div>
+    );
+}
+
+function DashboardCard({ ticker, savedState }) {
+    const { dispatch } = useAppContext();
+    const { apiData, scores } = savedState;
+    
+    const handleLoad = () => {
+        dispatch({ type: 'LOAD_ANALYSIS', payload: { ticker, savedState }});
+    };
+
+    const pillarScores = [
+        { name: 'Quality', score: scores.quality },
+        { name: 'Contrarian', score: scores.contrarian },
+        { name: 'Value', score: scores.valuation },
+        { name: 'Catalyst', score: scores.catalyst }
+    ];
+
+    return (
+        <div className="bg-gray-800 rounded-lg p-6 shadow-lg hover:shadow-cyan-500/20 hover:ring-1 hover:ring-cyan-500 transition-all cursor-pointer" onClick={handleLoad}>
+            <h3 className="text-2xl font-bold text-white">{apiData.companyName} ({ticker})</h3>
+            <div className="mt-4 space-y-3">
+                {pillarScores.map(p => (
+                    <div key={p.name}>
+                        <div className="flex justify-between text-sm font-medium text-gray-300">
+                            <span>{p.name}</span>
+                            <span>{p.score}/5</span>
+                        </div>
+                        <div className="w-full bg-gray-700 rounded-full h-2.5 mt-1">
+                            <div className="bg-cyan-500 h-2.5 rounded-full" style={{ width: `${(p.score / 5) * 100}%` }}></div>
+                        </div>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+
+function AnalysisView() {
+    const { state, dispatch } = useAppContext();
+    const [activeTab, setActiveTab] = useState('quality');
+
+    // Check if we are loading a saved analysis, otherwise initialize fresh state
+    const savedState = state.analyses[state.currentTicker];
+    const initialScores = savedState ? savedState.scores : { quality: 0, contrarian: 0, valuation: 0, catalyst: 0 };
+    const initialNotes = savedState ? savedState.notes : { quality: "", contrarian: "", valuation: "", catalyst: "" };
+    const initialCatalystState = savedState ? savedState.catalystState : {
+        guideposts: state.apiData?.pillars.catalysts.guideposts || [],
+        promoted: []
+    };
+
+    const [scores, setScores] = useState(initialScores);
+    const [notes, setNotes] = useState(initialNotes);
+    const [catalystState, setCatalystState] = useState(initialCatalystState);
+
+    // Effect to reset local state when a new ticker is analyzed
+     useEffect(() => {
+        const newSavedState = state.analyses[state.currentTicker];
+        setScores(newSavedState ? newSavedState.scores : { quality: 0, contrarian: 0, valuation: 0, catalyst: 0 });
+        setNotes(newSavedState ? newSavedState.notes : { quality: "", contrarian: "", valuation: "", catalyst: "" });
+        setCatalystState(newSavedState ? newSavedState.catalystState : {
+            guideposts: state.apiData?.pillars.catalysts.guideposts || [],
+            promoted: []
+        });
+    }, [state.currentTicker, state.analyses, state.apiData]);
+
+
+    if (state.loading) return <div className="text-center p-10"><div className="loader"></div><p className="mt-4">Fetching data...</p></div>;
+    if (!state.apiData) return <p>No data available. Please analyze a ticker.</p>;
+
+    const handleSave = () => {
+        dispatch({ 
+            type: 'SAVE_ANALYSIS', 
+            payload: {
+                ticker: state.currentTicker,
+                analysisState: { apiData: state.apiData, scores, notes, catalystState }
+            }
+        });
+        alert(`${state.currentTicker} analysis saved!`);
+    };
+
+    const tabs = [
+        { id: 'quality', label: 'Business Quality', icon: Heart },
+        { id: 'contrarian', label: 'Contrarian Analysis', icon: Brain },
+        { id: 'valuation', label: 'Valuation', icon: Scale },
+        { id: 'catalyst', label: 'Catalysts', icon: Target },
+    ];
+
+    return (
+        <div className="animate-fade-in">
+            <div className="flex justify-between items-center mb-6">
+                <h2 className="text-4xl font-bold text-white">{state.apiData.companyName} ({state.apiData.ticker})</h2>
+                <div>
+                     <button onClick={handleSave} className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-md flex items-center mr-2 transition-colors">
+                        <Save size={18} className="mr-2" /> Save
+                    </button>
+                    <button onClick={() => dispatch({type: 'SHOW_REPORT'})} className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-2 px-4 rounded-md flex items-center transition-colors">
+                        <FileText size={18} className="mr-2" /> Generate Report
+                    </button>
+                </div>
+            </div>
+            <div className="border-b border-gray-700">
+                <nav className="-mb-px flex space-x-8" aria-label="Tabs">
+                    {tabs.map(tab => (
+                        <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                            className={`${activeTab === tab.id ? 'border-cyan-500 text-cyan-400' : 'border-transparent text-gray-400 hover:text-gray-200 hover:border-gray-500'}
+                                        whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm flex items-center transition-colors`}>
+                            <tab.icon size={16} className="mr-2"/>{tab.label}
+                        </button>
+                    ))}
+                </nav>
+            </div>
+            
+            <div className="mt-8">
+                {activeTab === 'quality' && <Pillar1Quality data={state.apiData.pillars.business_quality} score={scores.quality} setScore={(s) => setScores({...scores, quality: s})} notes={notes.quality} setNotes={(n) => setNotes({...notes, quality: n})}/>}
+                {activeTab === 'contrarian' && <Pillar2Contrarian data={state.apiData.pillars.contrarian_analysis} score={scores.contrarian} setScore={(s) => setScores({...scores, contrarian: s})} notes={notes.contrarian} setNotes={(n) => setNotes({...notes, contrarian: n})}/>}
+                {activeTab === 'valuation' && <Pillar3Valuation data={state.apiData.pillars.valuation} score={scores.valuation} setScore={(s) => setScores({...scores, valuation: s})} notes={notes.valuation} setNotes={(n) => setNotes({...notes, valuation: n})}/>}
+                {activeTab === 'catalyst' && <Pillar4Catalyst catalystState={catalystState} setCatalystState={setCatalystState} score={scores.catalyst} setScore={(s) => setScores({...scores, catalyst: s})} notes={notes.catalyst} setNotes={(n) => setNotes({...notes, catalyst: n})}/>}
+            </div>
+        </div>
+    );
+}
+
+// --- Pillar Components ---
+
+function Pillar1Quality({ data, score, setScore, notes, setNotes }) {
+    const cashFlowData = data.reclassified_cash_flow_analysis.map(d => ({...d, netInvestment: -d.netInvestment})).reverse();
+    const roeData = data.key_metrics.map(d => ({ year: d.calendarYear, ROE: (d.roe * 100).toFixed(2) })).reverse();
+    
+    return (
+        <PillarWrapper title="Pillar 1: Business & Management Quality" score={score} setScore={setScore} notes={notes} setNotes={setNotes}>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <ChartCard title="Reclassified Cash Flow (Mauboussin)">
+                    <ResponsiveContainer width="100%" height={300}>
+                        <BarChart data={cashFlowData} margin={{ top: 5, right: 20, left: 20, bottom: 5 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#4A5568"/>
+                            <XAxis dataKey="year" stroke="#A0AEC0"/>
+                            <YAxis tickFormatter={(val) => `${val/1e9}B`} stroke="#A0AEC0"/>
+                            <Tooltip formatter={(value, name) => [`$${(value / 1e9).toFixed(2)}B`, name]} contentStyle={{ backgroundColor: '#1A202C', border: '1px solid #4A5568' }}/>
+                            <Legend />
+                            <Bar dataKey="nopat" name="NOPAT" stackId="a" fill="#38B2AC" />
+                            <Bar dataKey="freeCashFlow" name="Free Cash Flow" stackId="a" fill="#4299E1" />
+                        </BarChart>
+                    </ResponsiveContainer>
+                </ChartCard>
+                 <ChartCard title="Return on Equity">
+                    <ResponsiveContainer width="100%" height={300}>
+                        <LineChart data={roeData}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#4A5568"/>
+                            <XAxis dataKey="year" stroke="#A0AEC0"/>
+                            <YAxis tickFormatter={(val) => `${val}%`} stroke="#A0AEC0"/>
+                            <Tooltip formatter={(value) => [`${value}%`]} contentStyle={{ backgroundColor: '#1A202C', border: '1px solid #4A5568' }}/>
+                            <Legend />
+                            <Line type="monotone" dataKey="ROE" stroke="#38B2AC" strokeWidth={2} />
+                        </LineChart>
+                    </ResponsiveContainer>
+                </ChartCard>
+            </div>
+             <InfoCard title="Source Documents">
+                <div className="flex space-x-4">
+                    <a href={data.sec_filings['10-K']} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">Latest 10-K</a>
+                    <a href={data.sec_filings['10-Q']} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">Latest 10-Q</a>
+                </div>
+            </InfoCard>
+        </PillarWrapper>
+    );
+}
+
+function Pillar2Contrarian({ data, score, setScore, notes, setNotes }) {
+    const sentiment = data.news_sentiment.summary;
+    const total = sentiment.total_articles;
+    const negPercent = total > 0 ? (sentiment.negative_count / total) * 100 : 0;
+    
+    return (
+        <PillarWrapper title="Pillar 2: Contrarian Analysis & Psychology" score={score} setScore={setScore} notes={notes} setNotes={setNotes}>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                 <InfoCard title="Market Sentiment">
+                    <div className="w-full bg-gray-700 rounded-full h-8 flex items-center">
+                        <div className="bg-red-500 h-8 rounded-l-full text-center text-white font-bold flex items-center justify-center" style={{ width: `${negPercent}%` }}>
+                           {Math.round(negPercent)}%
+                        </div>
+                         <div className="bg-green-500 h-8 rounded-r-full flex-grow text-center text-white font-bold flex items-center justify-center">
+                           {100 - Math.round(negPercent)}%
+                        </div>
+                    </div>
+                     <div className="flex justify-between mt-2 text-sm text-gray-400"><span>Negative</span><span>Positive</span></div>
+                    <p className="mt-4">52-Week Range: <span className="font-mono text-yellow-400">${data.market_data.yearLow} - ${data.market_data.yearHigh}</span></p>
+                    <p>Current Price: <span className="font-mono text-white text-lg">${data.market_data.price}</span></p>
+                </InfoCard>
+                 <InfoCard title="Munger Psychological Checklist">
+                    <ul className="space-y-4">
+                        {data.munger_checklist.map(item => (
+                            <li key={item.bias}>
+                                <p className="font-semibold text-gray-200">{item.bias}</p>
+                                <p className="text-gray-400">{item.question}</p>
+                            </li>
+                        ))}
+                    </ul>
+                </InfoCard>
+            </div>
+        </PillarWrapper>
+    );
+}
+
+function Pillar3Valuation({ data, score, setScore, notes, setNotes }) {
+    const [costOfCapital, setCostOfCapital] = useState(10);
+    const { epv_equity, normalized_ebit } = data.valuation_analysis.earningsPowerValue;
+    const epvWithAssumption = (normalized_ebit / (costOfCapital / 100)) - data.valuation_analysis.earningsPowerValue.net_debt;
+
+    return (
+        <PillarWrapper title="Pillar 3: Valuation & Margin of Safety" score={score} setScore={setScore} notes={notes} setNotes={setNotes}>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                 <InfoCard title="Key Valuation Metrics">
+                    <p className="text-lg">Free Cash Flow Yield: <span className="text-2xl font-bold text-cyan-400">{data.valuation_analysis.freeCashFlowYield}%</span></p>
+                    <p className="text-sm text-gray-400 mt-1">A higher yield suggests the company generates significant cash relative to its total value.</p>
+                </InfoCard>
+                <InfoCard title="Earnings Power Value (EPV) Calculator">
+                    <div className="space-y-4">
+                        <div>
+                            <label className="block text-sm font-medium text-gray-300">Cost of Capital (%)</label>
+                            <input type="number" value={costOfCapital} onChange={(e) => setCostOfCapital(e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-md px-3 py-2 mt-1"/>
+                        </div>
+                        <p>Estimated EPV (Equity): <span className="text-xl font-bold text-cyan-400">${(epvWithAssumption / 1e12).toFixed(2)}T</span></p>
+                        <p>Current Market Cap: <span className="text-xl font-bold text-white">${(data.market_data.marketCap / 1e12).toFixed(2)}T</span></p>
+                    </div>
+                </InfoCard>
+            </div>
+        </PillarWrapper>
+    );
+}
+
+function Pillar4Catalyst({ catalystState, setCatalystState, score, setScore, notes, setNotes }) {
+    const handlePromote = (id) => {
+        const guidepost = catalystState.guideposts.find(g => g.id === id);
+        setCatalystState(prevState => ({
+            ...prevState,
+            guideposts: prevState.guideposts.map(g => g.id === id ? { ...g, status: 'promoted' } : g),
+            promoted: [...prevState.promoted, { ...guidepost, timeline: "0-12" }]
+        }));
+    };
+
+    const handleDismiss = (id) => {
+        setCatalystState(prevState => ({
+            ...prevState,
+            guideposts: prevState.guideposts.map(g => g.id === id ? { ...g, status: 'dismissed' } : g),
+        }));
+    };
+    
+    return (
+        <PillarWrapper title="Pillar 4: Catalyst Stream Analysis" score={score} setScore={setScore} notes={notes} setNotes={setNotes}>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div className="bg-gray-800 p-6 rounded-lg">
+                    <h3 className="text-xl font-semibold mb-4 text-cyan-400">Guidepost Catalysts</h3>
+                    <div className="space-y-4 max-h-96 overflow-y-auto pr-2">
+                        {catalystState.guideposts.filter(g => g.status === 'pending').map(g => (
+                             <div key={g.id} className="bg-gray-700 p-4 rounded-md">
+                                 <p className="font-semibold">{g.type}</p>
+                                 <p className="text-sm text-gray-300"><a href={g.link} target="_blank" rel="noopener noreferrer" className="hover:underline">{g.evidence}</a></p>
+                                 <div className="mt-2 flex space-x-2">
+                                     <button onClick={() => handlePromote(g.id)} className="text-xs bg-green-600 px-2 py-1 rounded hover:bg-green-700 flex items-center"><PlusCircle size={14} className="mr-1"/>Promote</button>
+                                     <button onClick={() => handleDismiss(g.id)} className="text-xs bg-red-600 px-2 py-1 rounded hover:bg-red-700 flex items-center"><ThumbsDown size={14} className="mr-1"/>Dismiss</button>
+                                 </div>
+                             </div>
+                        ))}
+                    </div>
+                </div>
+                <div className="bg-gray-800 p-6 rounded-lg">
+                     <h3 className="text-xl font-semibold mb-4 text-cyan-400">Promoted Catalyst Roadmap</h3>
+                    <div className="space-y-4">
+                        {catalystState.promoted.map(p => (
+                            <div key={p.id} className="bg-cyan-900/50 border border-cyan-700 p-4 rounded-md">
+                                <p className="font-semibold">{p.type}</p>
+                                <p className="text-sm text-gray-300">{p.evidence}</p>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            </div>
+        </PillarWrapper>
+    );
+}
+
+// --- Report View ---
+
+function ReportView() {
+    const { state } = useAppContext();
+    const { apiData, scores, notes, catalystState } = state.analyses[state.currentTicker] || {};
+
+    if (!apiData) return <div className="text-center p-10">Please save an analysis to generate a report.</div>;
+
+    const radarData = [
+        { subject: 'Quality', A: scores.quality, fullMark: 5 },
+        { subject: 'Contrarian', A: scores.contrarian, fullMark: 5 },
+        { subject: 'Value', A: scores.valuation, fullMark: 5 },
+        { subject: 'Catalyst', A: scores.catalyst, fullMark: 5 },
+    ];
+    
+    return (
+        <div className="bg-gray-900 p-8 animate-fade-in" id="report">
+            <div className="max-w-4xl mx-auto bg-gray-800 shadow-2xl rounded-lg p-8">
+                <div className="flex justify-between items-center border-b border-gray-700 pb-4 mb-6">
+                    <div>
+                        <h1 className="text-4xl font-bold text-white">{apiData.companyName} ({apiData.ticker})</h1>
+                        <p className="text-gray-400">Mispricing Detective Report</p>
+                    </div>
+                     <button onClick={() => window.print()} className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-2 px-4 rounded-md">Print/Save PDF</button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-8">
+                    <div className="md:col-span-2">
+                        <h2 className="text-2xl font-semibold text-cyan-400 mb-4">Opportunity Profile</h2>
+                        <ResponsiveContainer width="100%" height={300}>
+                            <RadarChart cx="50%" cy="50%" outerRadius="80%" data={radarData}>
+                                <PolarGrid stroke="#4A5568"/>
+                                <PolarAngleAxis dataKey="subject" tick={{ fill: '#A0AEC0' }}/>
+                                <PolarRadiusAxis angle={30} domain={[0, 5]} tick={{ fill: 'none' }} axisLine={{ stroke: 'none' }}/>
+                                <Radar name="Score" dataKey="A" stroke="#38B2AC" fill="#38B2AC" fillOpacity={0.6} />
+                            </RadarChart>
+                        </ResponsiveContainer>
+                    </div>
+                    <div className="md:col-span-3">
+                         <h2 className="text-2xl font-semibold text-cyan-400 mb-4">Investment Thesis</h2>
+                        <textarea className="w-full h-40 bg-gray-700 p-3 rounded-md text-gray-200" placeholder="Summarize..." defaultValue={notes.quality || ''}></textarea>
+                         <h2 className="text-2xl font-semibold text-cyan-400 mt-6 mb-4">Key Risks (Pre-Mortem)</h2>
+                        <textarea className="w-full h-24 bg-gray-700 p-3 rounded-md text-gray-200" placeholder="Invert, always invert..." defaultValue={notes.contrarian || ''}></textarea>
+                    </div>
+                </div>
+                 <div className="mt-8">
+                    <h2 className="text-2xl font-semibold text-cyan-400 mb-4">Catalyst Roadmap</h2>
+                    <div className="relative border-l-2 border-cyan-700 ml-4">
+                       {catalystState.promoted.map((cat, index) => (
+                           <div key={index} className="mb-8 ml-8">
+                               <div className="absolute -left-4 mt-1.5 h-8 w-8 bg-cyan-600 rounded-full border-4 border-gray-800 flex items-center justify-center">
+                                   <Target className="text-white" size={16}/>
+                               </div>
+                               <time className="mb-1 text-sm font-normal leading-none text-gray-400">0-12 Months</time>
+                               <h3 className="text-lg font-semibold text-white">{cat.type}</h3>
+                               <p className="text-base font-normal text-gray-300">{cat.evidence}</p>
+                           </div>
+                       ))}
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// --- Helper & Wrapper Components ---
+function PillarWrapper({ title, score, setScore, notes, setNotes, children }) {
+    return (
+        <div className="space-y-8">
+            <div className="bg-gray-800 p-6 rounded-lg shadow-lg">
+                <div className="flex justify-between items-center">
+                    <h3 className="text-2xl font-bold text-white">{title}</h3>
+                    <div className="flex items-center">
+                         <span className="mr-3 text-gray-400">Score:</span>
+                        {[1, 2, 3, 4, 5].map(s => <Star key={s} filled={s <= score} onClick={() => setScore(s)} />)}
+                    </div>
+                </div>
+            </div>
+            {children}
+            <InfoCard title="Analyst Notes">
+                 <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Enter your analysis and observations for this pillar..."
+                    className="w-full h-32 bg-gray-700 p-3 rounded-md text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"/>
+            </InfoCard>
+        </div>
+    );
+}
+
+function Star({ filled, onClick }) {
+    return (
+        <svg onClick={onClick} className={`w-6 h-6 cursor-pointer ${filled ? 'text-yellow-400' : 'text-gray-600'}`} fill="currentColor" viewBox="0 0 20 20">
+            <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+        </svg>
+    );
+}
+
+function ChartCard({ title, children }) {
+    return (
+        <div className="bg-gray-800 p-6 rounded-lg shadow-lg">
+            <h3 className="text-xl font-semibold mb-4 text-cyan-400">{title}</h3>
+            {children}
+        </div>
+    );
+}
+
+function InfoCard({ title, children }) {
+    return (
+        <div className="bg-gray-800 p-6 rounded-lg shadow-lg">
+            <h3 className="text-xl font-semibold mb-4 text-cyan-400">{title}</h3>
+            {children}
+        </div>
+    );
+}
+
+// Basic CSS for loader and print styles
+const styles = `
+.loader { border: 4px solid #f3f3f3; border-top: 4px solid #38B2AC; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto; }
+@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+.animate-fade-in { animation: fadeIn 0.5s ease-in-out; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+@media print {
+  body * { visibility: hidden; }
+  #report, #report * { visibility: visible; }
+  #report { position: absolute; left: 0; top: 0; width: 100%; }
+  .bg-gray-900 { background-color: white !important; }
+  .bg-gray-800 { background-color: #f8f9fa !important; }
+  .text-white { color: black !important; }
+  .text-gray-100 { color: #212529 !important; }
+  .text-gray-300 { color: #495057 !important; }
+  .text-gray-400 { color: #6c757d !important; }
+  .text-cyan-400 { color: #17a2b8 !important; }
+  .border-gray-700 { border-color: #dee2e6 !important; }
+  .border-cyan-700 { border-color: #17a2b8 !important; }
+  button { display: none !important; }
+}
+`;
+const styleSheet = document.createElement("style");
+styleSheet.innerText = styles;
+document.head.appendChild(styleSheet);
