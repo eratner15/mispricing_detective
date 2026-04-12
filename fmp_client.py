@@ -1,18 +1,18 @@
-# --- File: fmp_client.py ---
-# Handles all communication with the Financial Modeling Prep API.
-
 import requests
 
+
 class FmpApiClient:
-    def __init__(self, api_key):
+    def __init__(self, api_key, timeout_seconds=15):
         self.api_key = api_key
         self.base_url = "https://financialmodelingprep.com/api/v3"
+        self.timeout_seconds = timeout_seconds
 
     def _make_request(self, endpoint):
-        """Generic request helper."""
+        """Generic request helper with timeout and graceful failure."""
         try:
-            url = f"{self.base_url}/{endpoint}&apikey={self.api_key}"
-            response = requests.get(url)
+            separator = '&' if '?' in endpoint else '?'
+            url = f"{self.base_url}/{endpoint}{separator}apikey={self.api_key}"
+            response = requests.get(url, timeout=self.timeout_seconds)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
@@ -26,24 +26,24 @@ class FmpApiClient:
 
         if not all([income_statement, balance_sheet, cash_flow_statement]):
             return {"error": f"Failed to retrieve complete financial data for {ticker} from FMP."}
-        
+
         return {
             "income_statement": income_statement,
             "balance_sheet": balance_sheet,
-            "cash_flow_statement": cash_flow_statement
+            "cash_flow_statement": cash_flow_statement,
         }
 
     def get_key_metrics(self, ticker, period="annual", limit=10):
         return self._make_request(f"key-metrics/{ticker}?period={period}&limit={limit}") or []
 
     def get_profile_and_quote(self, ticker):
-        profile = self._make_request(f"profile/{ticker}?")
-        quote = self._make_request(f"quote/{ticker}?")
+        profile = self._make_request(f"profile/{ticker}")
+        quote = self._make_request(f"quote/{ticker}")
         enterprise_values = self._make_request(f"enterprise-values/{ticker}?period=annual&limit=1")
         return {
             "profile": profile[0] if profile else {},
             "quote": quote[0] if quote else {},
-            "enterprise_value": enterprise_values[0] if enterprise_values else {}
+            "enterprise_value": enterprise_values[0] if enterprise_values else {},
         }
 
     def get_news(self, ticker, limit=50):
